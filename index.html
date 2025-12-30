@@ -1,0 +1,205 @@
+<!DOCTYPE html>
+<html lang="tr">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Ders Çevirisi</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+</head>
+<body class="bg-gray-50">
+    <div id="app"></div>
+    <script>
+        const BACKEND_URL = window.location.origin.replace('http', 'ws');
+        const DEEPGRAM_KEY = '16fb171924bef3dc9fc7792e18b06960088632ba'; // SEN BUNU DEĞİŞTİR!
+
+        let ws, deepgramWs, mediaRecorder, role, roomCode;
+
+        function render(html) {
+            document.getElementById('app').innerHTML = html;
+        }
+
+        function showHome() {
+            render(`
+                <div class="min-h-screen flex items-center justify-center p-6">
+                    <div class="max-w-4xl w-full">
+                        <h1 class="text-5xl font-bold text-center mb-12">🎓 Ders Çevirisi</h1>
+                        <div class="grid md:grid-cols-2 gap-6">
+                            <div class="bg-white p-8 rounded-2xl shadow-xl hover:shadow-2xl transition">
+                                <div class="text-6xl text-center mb-4">👨‍🏫</div>
+                                <h2 class="text-3xl font-bold text-center mb-4">Hoca</h2>
+                                <button onclick="startTeaching()" class="w-full bg-blue-600 text-white py-4 rounded-xl text-xl font-bold hover:bg-blue-700">
+                                    Ders Başlat
+                                </button>
+                            </div>
+                            <div class="bg-white p-8 rounded-2xl shadow-xl hover:shadow-2xl transition">
+                                <div class="text-6xl text-center mb-4">👨‍🎓</div>
+                                <h2 class="text-3xl font-bold text-center mb-4">Öğrenci</h2>
+                                <input id="codeInput" placeholder="Oda Kodu" maxlength="6" class="w-full px-4 py-3 border-2 rounded-xl text-center text-2xl font-mono mb-4 uppercase">
+                                <button onclick="joinRoom()" class="w-full bg-green-600 text-white py-4 rounded-xl text-xl font-bold hover:bg-green-700">
+                                    Katıl
+                                </button>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            `);
+        }
+
+        async function startTeaching() {
+            roomCode = Math.random().toString(36).substring(2, 8).toUpperCase();
+            role = 'teacher';
+            
+            ws = new WebSocket(BACKEND_URL);
+            ws.onopen = () => ws.send(JSON.stringify({ type: 'create_room', roomCode }));
+            ws.onmessage = (e) => {
+                const data = JSON.parse(e.data);
+                if (data.type === 'student_count') {
+                    document.getElementById('studentCount').textContent = data.count;
+                }
+            };
+
+            render(`
+                <div class="min-h-screen p-6">
+                    <div class="max-w-6xl mx-auto">
+                        <div class="bg-white rounded-2xl shadow-xl p-6 mb-6">
+                            <div class="flex justify-between items-center">
+                                <div>
+                                    <h1 class="text-3xl font-bold">Hoca Paneli</h1>
+                                    <p class="text-gray-600">Oda Kodu: <span class="text-3xl font-mono font-bold text-blue-600">${roomCode}</span></p>
+                                </div>
+                                <div class="bg-green-100 px-6 py-4 rounded-xl">
+                                    <p class="text-sm">Öğrenci</p>
+                                    <p id="studentCount" class="text-3xl font-bold text-green-600">0</p>
+                                </div>
+                            </div>
+                        </div>
+                        
+                        <div class="bg-white rounded-2xl shadow-xl p-8 mb-6 text-center">
+                            <button id="recordBtn" onclick="toggleRecording()" class="w-48 h-48 rounded-full bg-blue-600 text-white text-xl font-bold hover:bg-blue-700 flex flex-col items-center justify-center mx-auto shadow-2xl">
+                                <span class="text-6xl mb-2">🎤</span>
+                                <span>Başlat</span>
+                            </button>
+                            <p id="status" class="mt-6 text-lg font-bold">Butona bas ve konuş</p>
+                        </div>
+
+                        <div class="bg-white rounded-2xl shadow-xl p-6">
+                            <div class="grid md:grid-cols-2 gap-6">
+                                <div>
+                                    <div class="bg-gray-100 px-4 py-2 rounded-t-xl"><p class="font-bold">🇹🇷 Türkçe</p></div>
+                                    <div id="transcriptTR" class="bg-gray-50 p-6 rounded-b-xl h-80 overflow-y-auto text-lg border-2">Konuşmanız burada...</div>
+                                </div>
+                                <div>
+                                    <div class="bg-blue-100 px-4 py-2 rounded-t-xl"><p class="font-bold">🇬🇧 İngilizce</p></div>
+                                    <div id="transcriptEN" class="bg-blue-50 p-6 rounded-b-xl h-80 overflow-y-auto text-lg border-2">Translation here...</div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            `);
+        }
+
+        async function toggleRecording() {
+            const btn = document.getElementById('recordBtn');
+            const status = document.getElementById('status');
+
+            if (!deepgramWs) {
+                const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+                
+                deepgramWs = new WebSocket('wss://api.deepgram.com/v1/listen', ['token', DEEPGRAM_KEY]);
+                
+                deepgramWs.onopen = () => {
+                    status.textContent = '🔴 Kayıt ediliyor - Konuşabilirsiniz';
+                    btn.innerHTML = '<span class="text-6xl mb-2">⏹️</span><span>Durdur</span>';
+                    btn.className = 'w-48 h-48 rounded-full bg-red-600 text-white text-xl font-bold hover:bg-red-700 flex flex-col items-center justify-center mx-auto shadow-2xl animate-pulse';
+                    
+                    mediaRecorder = new MediaRecorder(stream, { mimeType: 'audio/webm' });
+                    mediaRecorder.ondataavailable = (e) => {
+                        if (e.data.size > 0 && deepgramWs.readyState === 1) {
+                            deepgramWs.send(e.data);
+                        }
+                    };
+                    mediaRecorder.start(250);
+                };
+
+                deepgramWs.onmessage = (e) => {
+                    const data = JSON.parse(e.data);
+                    if (data.channel?.alternatives[0]) {
+                        const text = data.channel.alternatives[0].transcript;
+                        if (text && data.is_final) {
+                            const trDiv = document.getElementById('transcriptTR');
+                            trDiv.textContent += ' ' + text;
+                            trDiv.scrollTop = trDiv.scrollHeight;
+                            ws.send(JSON.stringify({ type: 'transcript', text }));
+                        }
+                    }
+                };
+
+                deepgramWs.onerror = () => {
+                    status.textContent = '❌ Deepgram hatası - API key kontrol et';
+                };
+            } else {
+                mediaRecorder.stop();
+                mediaRecorder.stream.getTracks().forEach(t => t.stop());
+                deepgramWs.close();
+                deepgramWs = null;
+                status.textContent = 'Durduruldu';
+                btn.innerHTML = '<span class="text-6xl mb-2">🎤</span><span>Başlat</span>';
+                btn.className = 'w-48 h-48 rounded-full bg-blue-600 text-white text-xl font-bold hover:bg-blue-700 flex flex-col items-center justify-center mx-auto shadow-2xl';
+            }
+        }
+
+        function joinRoom() {
+            const code = document.getElementById('codeInput').value.toUpperCase();
+            if (code.length !== 6) {
+                alert('6 haneli kod gir');
+                return;
+            }
+            
+            roomCode = code;
+            role = 'student';
+            
+            ws = new WebSocket(BACKEND_URL);
+            ws.onopen = () => ws.send(JSON.stringify({ type: 'join_room', roomCode }));
+
+            ws.onmessage = (e) => {
+                const data = JSON.parse(e.data);
+                if (data.type === 'translation') {
+                    const div = document.getElementById('translationText');
+                    div.textContent += ' ' + data.translated;
+                    div.scrollTop = div.scrollHeight;
+                } else if (data.type === 'error') {
+                    alert(data.message);
+                    showHome();
+                }
+            };
+
+            render(`
+                <div class="min-h-screen p-6">
+                    <div class="max-w-4xl mx-auto">
+                        <div class="bg-white rounded-2xl shadow-xl p-6 mb-6">
+                            <h1 class="text-3xl font-bold">Öğrenci Modu</h1>
+                            <p class="text-gray-600">Oda: <span class="text-2xl font-mono font-bold text-green-600">${roomCode}</span></p>
+                        </div>
+                        
+                        <div class="bg-white rounded-2xl shadow-xl p-10 text-center mb-6">
+                            <div class="w-32 h-32 bg-green-600 rounded-full mx-auto flex items-center justify-center mb-4 animate-pulse">
+                                <span class="text-6xl">🎧</span>
+                            </div>
+                            <h2 class="text-2xl font-bold mb-2">Çeviri Dinleniyor</h2>
+                            <p class="text-gray-600">Hocanın konuşması İngilizce'ye çevriliyor</p>
+                        </div>
+
+                        <div class="bg-white rounded-2xl shadow-xl p-6">
+                            <div class="bg-green-100 px-4 py-3 rounded-t-xl"><p class="font-bold">🇬🇧 İngilizce Çeviri</p></div>
+                            <div id="translationText" class="bg-green-50 p-8 rounded-b-xl min-h-96 text-xl leading-relaxed border-2 overflow-y-auto">Çeviri burada görünecek...</div>
+                        </div>
+                    </div>
+                </div>
+            `);
+        }
+
+        showHome();
+    </script>
+</body>
+</html>
